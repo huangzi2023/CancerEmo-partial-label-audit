@@ -1,0 +1,14 @@
+# data (obtain from original CancerEmo release; not redistributed)
+data/
+# run outputs
+outputs/
+**/outputs/
+multiseed_results/
+cleansplit_tier1/
+outputs.zip
+# python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+# os
+.DS_Store
