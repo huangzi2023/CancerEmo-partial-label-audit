@@ -51,8 +51,9 @@ def train_one_epoch(
     optimizer: AdamW,
     scheduler,
     device: torch.device,
+    pos_weight: torch.Tensor | None = None,
 ) -> float:
-    criterion = torch.nn.BCEWithLogitsLoss(reduction="mean")
+    criterion = torch.nn.BCEWithLogitsLoss(reduction="mean", pos_weight=pos_weight)
     model.train()
     total = 0.0
     for batch in loader:
@@ -99,6 +100,12 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--max-length", type=int, default=128)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--class-weighted", action="store_true",
+                    help="Apply per-emotion positive-class weighting "
+                         "(pos_weight = n_negative / n_positive on the train "
+                         "split) in the weak-zero BCE. Tests whether the "
+                         "Tier 2 -> Tier 3 gap is class-imbalance driven. "
+                         "Default off = original weak-zero baseline.")
     args = ap.parse_args()
 
     set_seed(args.seed)
@@ -106,16 +113,26 @@ def main() -> None:
     out_dir = root / "03_WeakMultiLabelMTL" / "outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
     device = best_device()
-    print(f"Device: {device}  |  Model: {args.model}")
+    tag = "weighted" if args.class_weighted else "weak_zero"
+    print(f"Device: {device}  |  Model: {args.model}  |  variant: {tag}")
 
     merged, splits = load_dataset_B(root)
     train_s, train_y, train_m = build_split(merged, splits, 0, "weak_zero")
     test_s, test_y, test_m = build_split(merged, splits, 2, "weak_zero")
     print(f"Train: {len(train_s)}  Test: {len(test_s)}")
+    n_pos = train_y.sum(axis=0)
+    n_neg = train_y.shape[0] - n_pos
     print(
-        "Per-emotion train positives: "
-        + ", ".join(f"{e}={int(train_y[:, j].sum())}" for j, e in enumerate(EMOTIONS))
+        "Per-emotion train positives / negatives: "
+        + ", ".join(f"{e}={int(n_pos[j])}/{int(n_neg[j])}" for j, e in enumerate(EMOTIONS))
     )
+
+    pos_weight = None
+    if args.class_weighted:
+        pw = (n_neg / np.clip(n_pos, 1, None)).astype("float32")
+        pos_weight = torch.tensor(pw, device=device)
+        print("pos_weight (n_neg/n_pos): "
+              + ", ".join(f"{e}={pw[j]:.2f}" for j, e in enumerate(EMOTIONS)))
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = SharedEncoderMTL(args.model, num_labels=8).to(device)
@@ -132,7 +149,8 @@ def main() -> None:
     )
 
     for epoch in range(args.epochs):
-        loss = train_one_epoch(model, train_loader, optimizer, scheduler, device)
+        loss = train_one_epoch(model, train_loader, optimizer, scheduler, device,
+                               pos_weight=pos_weight)
         print(f"epoch {epoch + 1}/{args.epochs}  train_loss={loss:.4f}")
 
     preds, probs, labels, _ = predict(model, test_loader, device)
@@ -142,9 +160,11 @@ def main() -> None:
     micro_f1 = (
         2 * (preds * labels).sum() / max(1, (preds.sum() + labels.sum()))
     )
-    metrics_df["model"] = "mtl_weak_zero_" + args.model.split("/")[-1]
+    label_stub = "mtl_weak_weighted_" if args.class_weighted else "mtl_weak_zero_"
+    metrics_df["model"] = label_stub + args.model.split("/")[-1]
 
-    metrics_path = out_dir / "03_mtl_weak_metrics.csv"
+    file_stub = "03_mtl_weak_weighted" if args.class_weighted else "03_mtl_weak"
+    metrics_path = out_dir / f"{file_stub}_metrics.csv"
     metrics_df.to_csv(metrics_path, index=False)
 
     test_ids = [sentence_id_md5(s) for s in test_s]
@@ -161,7 +181,7 @@ def main() -> None:
                 }
             )
     preds_df = pd.DataFrame(pred_records)
-    preds_path = out_dir / "03_mtl_weak_predictions.csv"
+    preds_path = out_dir / f"{file_stub}_predictions.csv"
     preds_df.to_csv(preds_path, index=False)
 
     print()

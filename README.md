@@ -61,6 +61,9 @@ python scripts/binary_baseline_replication.py --skip-classical \
 # 3) Tier 2 — weak-zero MTL   |   Tier 3 — masked partial-label MTL
 python scripts/mtl_weak_zero.py     --model bert-base-uncased --epochs 3 --seed 42
 python scripts/mtl_partial_masked.py --model bert-base-uncased --epochs 3 --seed 42
+#   Tier 2-weighted (class-weighted weak-zero control): add  --class-weighted
+#   (per-emotion pos_weight = n_negative / n_positive; writes *_weighted_* outputs)
+python scripts/mtl_weak_zero.py --model bert-base-uncased --epochs 3 --seed 42 --class-weighted
 
 # 4) diagnostics + evaluation
 python scripts/weak_zero_threshold_robustness.py
